@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 
 /* =========================================
  *                 Constants
@@ -14,8 +15,17 @@
 /** @brief alias for the maximum line width + termination character */
 #define MAX_STR_LEN MAX_LINE_WIDTH + 1
 /** @brief the maximum number of phone items supported */
-#define MAX_PHONE_ITEMS 256
-#define MAX_PHONE_ITEMS_FILE_SIZE (MAX_LINE_WIDTH + sizeof('\0')) * MAX_PHONE_ITEMS
+#define MAX_PHONE_ITEMS 100
+
+// to save up extra space on the stack
+typedef uint8_t String_Index;
+typedef uint8_t Phone_Item_Index;
+
+#define string_index_max_size 1 << sizeof(String_Index) * 8 - 1
+#define phone_item_index_max_size 1 << sizeof(Phone_Item_Index) * 8 - 1
+// ensure that the byte size for the indexes will suffice
+_STATIC_ASSERT(string_index_max_size > MAX_STR_LEN);
+_STATIC_ASSERT(phone_item_index_max_size > MAX_PHONE_ITEMS);
 
 #define todo() \
     printf("Not yet implemented [%s, %d]", __func__, __LINE__); \
@@ -37,10 +47,8 @@ typedef int Error;
 #define ERROR_NONE (Error)0
 #define ERROR_INVALID_NUMBER_OF_ARGS (Error)-1
 #define ERORR_INVALID_NUMBER_ARG (Error)-2
-#define ERROR_FILE_OPEN (Error)-3
 #define ERROR_FILE_TOO_LARGE (Error)-4
 #define ERROR_FILE_SIZE_MISMATCH (Error)-5
-#define ERROR_SCANNING_LINE (Error)-6
 #define ERROR_LINE_TOO_LARGE (Error)-7
 
 #define register_error(error, error_msg) \
@@ -60,7 +68,7 @@ static inline void on_exit_error(Error error) {
 /** @note it is fine to 'exit' the application intermittently if fatal error occurs, the program does not heap alloc at all */
 #define do_exit(error) \
     do { \
-        printf("[Error]: %d\n", error); \
+        on_exit_error(error); \
         exit(error); \
     } while(0);
 // todo: error messages
@@ -76,9 +84,11 @@ static inline void on_exit_error(Error error) {
  *                  Strings
  * ========================================= */
 
+typedef char String[MAX_STR_LEN];
+
 typedef struct {
-    size_t size;
-    char string[MAX_STR_LEN];
+    String_Index size;
+    String string;
 } Sized_String;
 
 typedef char* String_View;
@@ -88,7 +98,7 @@ static inline int char_is_number(char c) {
 }
 
 static inline int string_is_number(char* str) {
-    for (size_t i = 0; str[i] != '\0' && i < MAX_STR_LEN; i++) {
+    for (String_Index i = 0; str[i] != '\0' && i < MAX_STR_LEN; i++) {
         if (!char_is_number(str[i])) {
             return 1; // note: to match the strcmp and other string related functions returning 0 on success, we will follow
         }
@@ -104,15 +114,6 @@ static inline char to_lower(char c) {
     }
     return c + 32;
 }
-
-/* =========================================
- *                   File
- * ========================================= */
-
-typedef struct _File_Content {
-    size_t actual_size;
-    char content[MAX_PHONE_ITEMS_FILE_SIZE];
-} File_Content;
 
 /* =========================================
  *                 SysArgs
@@ -138,7 +139,7 @@ static Sys_Args validate_sys_args(int argc, char** argv) {
     or_exit(argc < 4 ? ERROR_NONE : ERROR_INVALID_NUMBER_OF_ARGS);
     Sys_Args args = {0};
     if (argc > 1) {
-        int current_arg = 1; // skip the first argument
+        String_Index current_arg = 1; // skip the first argument
         /* check for optional parameter (-s) */
         if (strcmp(argv[current_arg], "-s") == 0) {
             args.optionals |= OPTIONAL_SYS_ARG_FOOTPRINT_SEARCH;
@@ -165,18 +166,23 @@ static Sys_Args validate_sys_args(int argc, char** argv) {
  * ========================================= */
 
 typedef struct _Phone_Item {
-    char name[MAX_STR_LEN];
-    char number[MAX_STR_LEN];
+    String name;
+    String number;
 } Phone_Item;
 
 typedef struct _Phone_Registry {
-    size_t num_items;
+    Phone_Item_Index num_items;
     struct _Phone_Item items[MAX_PHONE_ITEMS];
 } Phone_Registry;
 
-static inline int _parse_read_line(OUT char* out_buff) {
+typedef struct _Phone_Registry_View {
+    Phone_Item_Index num_indexes;
+    Phone_Item_Index indexes[MAX_PHONE_ITEMS];
+} Phone_Registry_View;
+
+static inline int _parse_read_line(OUT String_View out_buff) {
     char ch = 0;
-    int num_chars = 0;
+    String_Index num_chars = 0;
     while ((ch = getchar()) != EOF && ch != '\n' && num_chars < MAX_LINE_WIDTH) {
         out_buff[num_chars++] = ch;
     }
@@ -184,7 +190,7 @@ static inline int _parse_read_line(OUT char* out_buff) {
     return (ch == EOF && num_chars == 0) ? 1 : 0;
 }
 
-static void parse_file_contents(OUT Phone_Registry* out_registry) {
+static void parse_file_contents(OUT Phone_Registry* restrict out_registry) {
     for (; out_registry->num_items < MAX_PHONE_ITEMS; out_registry->num_items++) { // note: this size cannot exceed since we shall have already checked the file size when reading
         // read name
         char* name = out_registry->items[out_registry->num_items].name;
@@ -209,7 +215,7 @@ typedef int (*Substring_Match_Function)(char, char);
 
 /* @note technically we could merge the 'default_match' and 'is_in_t9_range' but there would be no difference... ?? */
 static int check_substring_match(Sized_String needle, String_View haystack, Substring_Match_Function match_function) {
-    size_t i = 0;
+    String_Index i = 0;
     for (; haystack[i] != '\0' && i < needle.size; i++) {
         if (match_function(haystack[i], needle.string[i])) {
             return 1;
@@ -232,27 +238,24 @@ static int is_in_t9_range(char ch, char num) {
     case '9':
         return ch >= 'w' && ch <= 'z' ? 0 : 1;
     default:
-        char lower = ((int)(num - '0') - 2) * 3 + 'a';
-        char upper = ((int)(num - '0') - 1) * 3 + 'a' - 1;
-        int ret = ch >= lower && ch <= upper ? 0 : 1;
-        return ret;
+        return ch >= ((int)(num - '0') - 2) * 3 + 'a' && ch <= ((int)(num - '0') - 1) * 3 + 'a' - 1  ? 0 : 1;
     }
 }
 
-static void match(Sized_String phone, Phone_Registry* registry, OUT Phone_Registry* out_matches) {
-    for (size_t i = 0; i < registry->num_items; i++) {
+static void match(Sized_String phone, Phone_Registry* registry, OUT Phone_Registry_View* out_matches) {
+    for (Phone_Item_Index i = 0; i < registry->num_items; i++) {
         char* curr_number = registry->items[i].number;
         char phone_placeholder = phone.string[0];
-        for (size_t j = 0; curr_number[j] != '\0'; j++) {
+        for (Phone_Item_Index j = 0; curr_number[j] != '\0'; j++) {
             if (curr_number[j] == phone_placeholder && (check_substring_match(phone, &curr_number[j], default_match) == 0)) {
-                memcpy(&out_matches->items[out_matches->num_items++], &registry->items[i], sizeof(Phone_Item));
+                out_matches->indexes[out_matches->num_indexes++] = i;
                 break;
             }
         }
         char* curr_name = &registry->items[i].name[0];
-        for (size_t j = 0; curr_name[j] != '\0'; j++) {
+        for (Phone_Item_Index j = 0; curr_name[j] != '\0'; j++) {
             if ((is_in_t9_range(curr_name[j], phone_placeholder) == 0) && (check_substring_match(phone, &curr_name[j], is_in_t9_range) == 0)) {
-                memcpy(&out_matches->items[out_matches->num_items++], &registry->items[i], sizeof(Phone_Item));
+                out_matches->indexes[out_matches->num_indexes++] = i;
                 break;
             }
         }
@@ -263,7 +266,7 @@ static void match_ex(Phone_Registry* registry, OUT Phone_Registry* out_matches) 
     todo();
 }
 
-static void registry_match(Sys_Args* args, Phone_Registry* registry, OUT Phone_Registry* out_matches) {
+static void registry_match(Sys_Args* restrict args, Phone_Registry* restrict registry, OUT Phone_Registry* restrict out_matches) {
     if ((args->optionals & OPTIONAL_SYS_ARG_FOOTPRINT_NUMBER) == 0) {
         // the number itself is not set, meaning we can return immedeatly
         memcpy(out_matches, registry, sizeof(Phone_Registry));
@@ -281,18 +284,23 @@ static void inline print_match(Phone_Item* item) {
     printf("%s\n%s\n", item->name, item->number);
 }
 
-static void inline print_matches(Phone_Registry* restrict registry) {
-    for (size_t i = 0; i < registry->num_items; i++) {
-        print_match(&registry->items[i]);
+static void inline print_matches(Phone_Registry* restrict registry, Phone_Registry_View* restrict registry_view) {
+    for (Phone_Item_Index i = 0; i < registry_view->num_indexes; i++) {
+        print_match(&registry->items[registry_view->indexes[i]]);
     }
 }
 
 int main(int argc, char** argv) {
+    
+    /* since we need to allocate a lot of memory... and also there is no need for them to be disposed during app's run time so we can just make them static */
+    static Sys_Args args = { 0 };
+    static Phone_Registry registry = { 0 };
+    static Phone_Registry_View matches = { 0 };
+
     /* ensure the validity of sysargs */
-    Sys_Args args = validate_sys_args(argc, argv);
+    args = validate_sys_args(argc, argv);
 
     /* parse file */
-    Phone_Registry registry = {0};
     parse_file_contents(&registry);
 
     printf("[Debug_Info]: List of parsed registers:\n");
@@ -302,11 +310,10 @@ int main(int argc, char** argv) {
     }
 
     /* scan for matches */
-    Phone_Registry matches = {0};
     registry_match(&args, &registry, &matches);
 
     /* print matches */
-    print_matches(&matches);
+    print_matches(&registry, &matches);
 
     return ERROR_NONE;
 }
