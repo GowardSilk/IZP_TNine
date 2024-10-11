@@ -31,6 +31,7 @@
  *                   Error
  * ========================================= */
 
+/** @brief error alias (should be of the same type as the main's return type) */
 typedef int Error;
 
 #define ERROR_NONE (Error)0
@@ -41,6 +42,21 @@ typedef int Error;
 #define ERROR_FILE_SIZE_MISMATCH (Error)-5
 #define ERROR_SCANNING_LINE (Error)-6
 #define ERROR_LINE_TOO_LARGE (Error)-7
+
+#define register_error(error, error_msg) \
+    case error: \
+        printf("[%s]: %s", stringify(error), error_msg); \
+        return
+
+static inline void on_exit_error(Error error) {
+    printf("\x1b[31m[Error]:\x1b[0m ");
+    switch (error) {
+        register_error(ERROR_INVALID_NUMBER_OF_ARGS, "The number of arguments passed to the tnine.exe is either too small or too large\nThe possible arguments are: [optional]-s [optional]#number_to_be_searched_for\n");
+        register_error(ERORR_INVALID_NUMBER_ARG, "The argument [optional]#number_to_be_searched_for is not in valid number format!\n");
+        register_error(ERROR_FILE_SIZE_MISMATCH, "The number of lines expected and the number of given lines is invalid!\n");
+    }
+}
+
 /** @note it is fine to 'exit' the application intermittently if fatal error occurs, the program does not heap alloc at all */
 #define do_exit(error) \
     do { \
@@ -60,6 +76,13 @@ typedef int Error;
  *                  Strings
  * ========================================= */
 
+typedef struct {
+    size_t size;
+    char string[MAX_STR_LEN];
+} Sized_String;
+
+typedef char* String_View;
+
 static inline int char_is_number(char c) {
     return c >= '0' && c <= '9';
 }
@@ -73,6 +96,15 @@ static inline int string_is_number(char* str) {
     return 0;
 }
 
+#define is_lower(c) (c) >= 'a' && (c) <= 'z'
+
+static inline char to_lower(char c) {
+    if (is_lower(c)) {
+        return c;
+    }
+    return c + 32;
+}
+
 /* =========================================
  *                   File
  * ========================================= */
@@ -81,20 +113,6 @@ typedef struct _File_Content {
     size_t actual_size;
     char content[MAX_PHONE_ITEMS_FILE_SIZE];
 } File_Content;
-
-static inline void try_fread(OUT File_Content* out_buff) {
-    // todo: stdin check!
-    fseek(stdin, 0L, SEEK_END);
-    long int buff_size = ftell(stdin);
-    if (buff_size > (long int)MAX_PHONE_ITEMS_FILE_SIZE) {
-        fclose(stdin);
-        or_exit(ERROR_FILE_TOO_LARGE);
-    }
-    fseek(stdin, 0L, SEEK_SET);
-    out_buff->actual_size = (size_t)buff_size; // note: this conversion is fine since we do not move with the file placeholder (the lowest possible size is 0 when SEEK_SET == SEEK_END)
-    fread(&out_buff->content[0], sizeof(char), buff_size, stdin);
-    fclose(stdin);
-}
 
 /* =========================================
  *                 SysArgs
@@ -108,32 +126,36 @@ typedef int Optional_Sys_Args_Footprint;
 typedef struct _Sys_Args {
     /** @brief we will store the optional arguments here, then later in the program we may determine whether or not to use the associated parameter inside the algorithm */
     Optional_Sys_Args_Footprint optionals;
-    /** @note assuming the line width inside the text file can be 100, then the keyboard input should match the string */
-    char keyboard_input[MAX_STR_LEN];
+    /**
+      * @note assuming the line width inside the text file can be 100, then the keyboard input should match the string
+      * @brief this is the number that can be submitted by the user
+      */
+    Sized_String keyboard_input;
 } Sys_Args;
 
-Sys_Args validate_sys_args(int argc, char** argv) {
+static Sys_Args validate_sys_args(int argc, char** argv) {
+    // todo: is there a possibility that the first argument wont be defined ??
     or_exit(argc < 4 ? ERROR_NONE : ERROR_INVALID_NUMBER_OF_ARGS);
     Sys_Args args = {0};
     if (argc > 1) {
-        // todo: is there a possibility that the first argument wont be defined ??
         int current_arg = 1; // skip the first argument
         /* check for optional parameter (-s) */
         if (strcmp(argv[current_arg], "-s") == 0) {
             args.optionals |= OPTIONAL_SYS_ARG_FOOTPRINT_SEARCH;
             current_arg++;
-            or_exit(argc > current_arg ? ERROR_NONE : ERROR_INVALID_NUMBER_OF_ARGS);
+            if (argc == current_arg) {
+                return;
+            }
         }
         /* check for optional parameter (#number) */
         if (string_is_number(argv[current_arg]) == 0) {
             args.optionals |= OPTIONAL_SYS_ARG_FOOTPRINT_NUMBER;
-            current_arg++;
-            or_exit(argc > current_arg ? ERROR_NONE : ERROR_INVALID_NUMBER_OF_ARGS);
+            // determine the length of the string
+            args.keyboard_input.size = strlen(argv[current_arg]);
+            memcpy(&args.keyboard_input.string[0], argv[current_arg], args.keyboard_input.size);
+        } else {
+            do_exit(ERORR_INVALID_NUMBER_ARG);
         }
-        // todo: how can we ensure that the number parameter remains valid, yet it wont collide with blank string ?
-        // else {
-        //     do_exit(ERORR_INVALID_NUMBER_ARG);
-        // }
     }
     return args;
 }
@@ -145,7 +167,7 @@ Sys_Args validate_sys_args(int argc, char** argv) {
 typedef struct _Phone_Item {
     char name[MAX_STR_LEN];
     char number[MAX_STR_LEN];
-} Phone;
+} Phone_Item;
 
 typedef struct _Phone_Registry {
     size_t num_items;
@@ -159,17 +181,10 @@ static inline int _parse_read_line(OUT char* out_buff) {
         out_buff[num_chars++] = ch;
     }
     out_buff[num_chars] = '\0';
-    // todo: why is not this working properly ??
-    // int scanned = scanf(
-    //     "%[^\n]%c", out_buff, &c);
-    // printf("Scanned: %d\nScanned string: %s\n", scanned, out_buff);
-    // or_exit(scanned == 1 ? ERROR_NONE : ERROR_SCANNING_LINE);
-    // or_exit(c == '\n' ? ERROR_NONE : ERROR_LINE_TOO_LARGE);
-    // or_exit(out_buff[MAX_LINE_WIDTH - 1] == '\n' ? ERROR_NONE : ERROR_LINE_TOO_LARGE);
     return (ch == EOF && num_chars == 0) ? 1 : 0;
 }
 
-void parse_file_contents(OUT Phone_Registry* out_registry) {
+static void parse_file_contents(OUT Phone_Registry* out_registry) {
     for (; out_registry->num_items < MAX_PHONE_ITEMS; out_registry->num_items++) { // note: this size cannot exceed since we shall have already checked the file size when reading
         // read name
         char* name = out_registry->items[out_registry->num_items].name;
@@ -177,7 +192,7 @@ void parse_file_contents(OUT Phone_Registry* out_registry) {
             if (strlen(name) == 0) {
                 break;
             }
-            do_exit(ERROR_SCANNING_LINE);
+            do_exit(ERROR_FILE_SIZE_MISMATCH);
         }
         // read number
         char* number = out_registry->items[out_registry->num_items].number;
@@ -186,16 +201,90 @@ void parse_file_contents(OUT Phone_Registry* out_registry) {
             break;
         }
     }
-    // ensure that we have proper size for the phone registry
-    // todo: or_exit(num_lines % 2 == 0 ? ERROR_NONE : ERROR_FILE_SIZE_MISMATCH);
 }
 
-void registry_match(Sys_Args* args, Phone_Registry* registry, OUT Phone_Registry* out_matches) {
+// should return 0 on match and 1 on mismatch
+// todo: make the type more explicit since there is this inversed logic of 0 being 'true' and 1 being 'false'
+typedef int (*Substring_Match_Function)(char, char);
+
+/* @note technically we could merge the 'default_match' and 'is_in_t9_range' but there would be no difference... ?? */
+static int check_substring_match(Sized_String needle, String_View haystack, Substring_Match_Function match_function) {
+    size_t i = 0;
+    for (; haystack[i] != '\0' && i < needle.size; i++) {
+        if (match_function(haystack[i], needle.string[i])) {
+            return 1;
+        }
+    }
+    return needle.size == i ? 0 : 1;
+}
+
+static int default_match(char c1, char c2) {
+    return to_lower(c1) == to_lower(c2) ? 0 : 1;
+}
+
+static int is_in_t9_range(char ch, char num) {
+    ch = to_lower(ch);
+    switch (num) {
+    case '0':
+        return ch == '+' ? 0 : 1;
+    case '1':
+        return 1;
+    case '9':
+        return ch >= 'w' && ch <= 'z' ? 0 : 1;
+    default:
+        char lower = ((int)(num - '0') - 2) * 3 + 'a';
+        char upper = ((int)(num - '0') - 1) * 3 + 'a' - 1;
+        int ret = ch >= lower && ch <= upper ? 0 : 1;
+        return ret;
+    }
+}
+
+static void match(Sized_String phone, Phone_Registry* registry, OUT Phone_Registry* out_matches) {
+    for (size_t i = 0; i < registry->num_items; i++) {
+        char* curr_number = registry->items[i].number;
+        char phone_placeholder = phone.string[0];
+        for (size_t j = 0; curr_number[j] != '\0'; j++) {
+            if (curr_number[j] == phone_placeholder && (check_substring_match(phone, &curr_number[j], default_match) == 0)) {
+                memcpy(&out_matches->items[out_matches->num_items++], &registry->items[i], sizeof(Phone_Item));
+                break;
+            }
+        }
+        char* curr_name = &registry->items[i].name[0];
+        for (size_t j = 0; curr_name[j] != '\0'; j++) {
+            if ((is_in_t9_range(curr_name[j], phone_placeholder) == 0) && (check_substring_match(phone, &curr_name[j], is_in_t9_range) == 0)) {
+                memcpy(&out_matches->items[out_matches->num_items++], &registry->items[i], sizeof(Phone_Item));
+                break;
+            }
+        }
+    }
+}
+
+static void match_ex(Phone_Registry* registry, OUT Phone_Registry* out_matches) {
     todo();
 }
 
-void print_matches(Phone_Registry* registry) {
-    todo();
+static void registry_match(Sys_Args* args, Phone_Registry* registry, OUT Phone_Registry* out_matches) {
+    if ((args->optionals & OPTIONAL_SYS_ARG_FOOTPRINT_NUMBER) == 0) {
+        // the number itself is not set, meaning we can return immedeatly
+        memcpy(out_matches, registry, sizeof(Phone_Registry));
+        return;
+    }
+    if (args->optionals & OPTIONAL_SYS_ARG_FOOTPRINT_SEARCH > 0) {
+        // optional search enabled
+        match_ex(registry, OUT out_matches);
+        return;
+    }
+    match(args->keyboard_input, registry, OUT out_matches);
+}
+
+static void inline print_match(Phone_Item* item) {
+    printf("%s\n%s\n", item->name, item->number);
+}
+
+static void inline print_matches(Phone_Registry* restrict registry) {
+    for (size_t i = 0; i < registry->num_items; i++) {
+        print_match(&registry->items[i]);
+    }
 }
 
 int main(int argc, char** argv) {
