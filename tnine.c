@@ -89,7 +89,7 @@ inline static void on_exit_error(Error error) {
     print_error("\x1b[31m[Error]:\x1b[0m ");
     print_error("\t%d\n", error);
     switch (error) {
-        register_error(ERROR_INVALID_NUMBER_OF_ARGS, "The number of arguments passed to the tnine.exe is either too small or too large\nThe possible arguments are: [optional]-s [optional]#number_to_be_searched_for\n");
+        register_error(ERROR_INVALID_NUMBER_OF_ARGS, "The number of arguments passed to the tnine.exe is either too small or too large\nThe possible arguments are: [optional]-s [optional]#number_to_be_searched_for [optional/debug build]-d\n");
         register_error(ERORR_INVALID_NUMBER_ARG, "The argument [optional]#number_to_be_searched_for is not in valid number format!\n");
         register_error(ERORR_INVALID_NUMBER_ARG_LENGTH, "The argument [optional]#number_to_be_searched_for is larger than the MAX_STR_LEN[=" stringify(MAX_STR_LEN) "]");
         register_error(ERROR_FILE_SIZE_MISMATCH, "The number of lines expected and the number of given lines is invalid!\n");
@@ -168,6 +168,7 @@ typedef int Optional_Sys_Args_Footprint;
 #define bit(x) (1 << (x))
 #define OPTIONAL_SYS_ARG_FOOTPRINT_SEARCH bit(1)
 #define OPTIONAL_SYS_ARG_FOOTPRINT_NUMBER bit(2)
+#define OPTIONAL_SYS_ARG_FOOTPRINT_DEBUG  bit(3) 
 typedef struct _Sys_Args {
     /** @brief we will store the optional arguments here, then later in the program we may determine whether or not to use the associated parameter inside the algorithm */
     Optional_Sys_Args_Footprint optionals;
@@ -178,14 +179,21 @@ typedef struct _Sys_Args {
     Sized_String keyboard_input;
 } Sys_Args;
 
+#ifdef DEBUG
+#define MAX_SYS_ARGS_COUNT 5 // 4 + debug
+#else
+#define MAX_SYS_ARGS_COUNT 4
+#endif
+
 static Sys_Args validate_sys_args(int argc, char** argv) {
-    or_exit(argc < 4, ERROR_INVALID_NUMBER_OF_ARGS);
+    or_exit(argc < MAX_SYS_ARGS_COUNT, ERROR_INVALID_NUMBER_OF_ARGS);
     Sys_Args args = {0};
     if (argc > 1) {
         String_Index current_arg = 1; // skip the first argument
         /* check for optional parameter (-s) */
         if (str_success(strcmp(argv[current_arg], "-s"))) {
             args.optionals |= OPTIONAL_SYS_ARG_FOOTPRINT_SEARCH;
+            // move to the next arg
             current_arg++;
             if (argc == current_arg) {
                 return args;
@@ -196,12 +204,31 @@ static Sys_Args validate_sys_args(int argc, char** argv) {
             args.optionals |= OPTIONAL_SYS_ARG_FOOTPRINT_NUMBER;
             // determine the length of the string
             size_t str_size = strlen(argv[current_arg]);
-            or_exit(str_size > MAX_STR_LEN, ERORR_INVALID_NUMBER_ARG_LENGTH);
+            or_exit(str_size < MAX_STR_LEN, ERORR_INVALID_NUMBER_ARG_LENGTH);
             args.keyboard_input.size = (String_Index)str_size;
             memcpy(&args.keyboard_input.string[0], argv[current_arg], args.keyboard_input.size);
+            // move to the next arg
+            current_arg++;
+            if (argc == current_arg) {
+                return args;
+            }
         } else {
             do_exit(ERORR_INVALID_NUMBER_ARG);
         }
+#ifdef DEBUG // only a debug parameter
+        /* check for optional parameter (-d) */
+        if (str_success(strcmp(argv[current_arg], "-d"))) {
+            args.optionals |= OPTIONAL_SYS_ARG_FOOTPRINT_DEBUG;
+            // move to the next arg
+            current_arg++;
+            if (argc == current_arg) {
+                return args;
+            }
+        } else {
+            // todo: exit error
+        }
+#endif
+        do_exit(ERROR_INVALID_NUMBER_OF_ARGS);
     }
     return args;
 }
@@ -320,7 +347,11 @@ static int is_in_t9_range(char ch, char num) {
 /**
  * @brief scans for matches of param phone in the param registry, results are put inside param out_matches
  */
+#ifdef DEBUG
+static void match(Sized_String phone, int debug_enabled, Phone_Registry* registry, OUT Phone_Registry_View* out_matches) {
+#else
 static void match(Sized_String phone, Phone_Registry* registry, OUT Phone_Registry_View* out_matches) {
+#endif
     for (Phone_Item_Index i = 0; i < registry->num_items; i++) {
         // check for number first (higher priority)
         char* curr_number = registry->items[i].number;
@@ -329,6 +360,20 @@ static void match(Sized_String phone, Phone_Registry* registry, OUT Phone_Regist
             if (curr_number[j] == phone_placeholder && 
                 str_success(check_substring_match(phone, &curr_number[j], default_match))) {
                 out_matches->indexes[out_matches->num_indexes++] = i;
+#ifdef DEBUG
+                if (debug_enabled) {
+                    printf("Number matched at: %d\n%s\n", j, curr_number);
+                    String ranged_string = {0};
+                    for (Phone_Item_Index k = 0; k < strlen(curr_number); k++) {
+                        if (k >= j && k < j + phone.size) {
+                            ranged_string[k] = '^';
+                        } else {
+                            ranged_string[k] = ' ';
+                        }
+                    }
+                    printf("%s\n", ranged_string);
+                }
+#endif
                 break;
             }
         }
@@ -339,6 +384,20 @@ static void match(Sized_String phone, Phone_Registry* registry, OUT Phone_Regist
             if ((is_in_t9_range(curr_name[j], phone_placeholder) == 0) && 
                 str_success(check_substring_match(phone, &curr_name[j], is_in_t9_range))) {
                 out_matches->indexes[out_matches->num_indexes++] = i;
+#ifdef DEBUG
+                if (debug_enabled) {
+                    printf("Name matched at: %d\n%s\n", j, curr_name);
+                    String ranged_string = {0};
+                    for (Phone_Item_Index k = 0; k < strlen(curr_name); k++) {
+                        if (k >= j && k < j + phone.size) {
+                            ranged_string[k] = '^';
+                        } else {
+                            ranged_string[k] = ' ';
+                        }
+                    }
+                    printf("%s\n", ranged_string);
+                }
+#endif
                 break;
             }
         }
@@ -392,7 +451,11 @@ static void registry_match(Sys_Args* restrict args, Phone_Registry* restrict reg
         match_ex(args->keyboard_input, registry, out_matches);
         return;
     }
+#ifdef DEBUG
+    match(args->keyboard_input, args->optionals & OPTIONAL_SYS_ARG_FOOTPRINT_DEBUG, registry, out_matches);
+#else
     match(args->keyboard_input, registry, out_matches);
+#endif
 }
 
 inline static void print_match(Phone_Item* item) {
