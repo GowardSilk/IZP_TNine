@@ -1,3 +1,7 @@
+#if defined(__unix__)
+#define _POSIX_C_SOURCE 200112L
+#endif
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -34,7 +38,8 @@
     exit(EXIT_FAILURE);
 
 #define _stringify_dispatch(x) #x
-#define stringify(x) _stringify_dispatch(x)
+#define stringify_dispatch(x) _stringify_dispatch(x)
+#define stringify(x) #x
 
 // to save up extra space on the stack
 typedef uint8_t String_Index;
@@ -44,8 +49,8 @@ typedef uint8_t Phone_Item_Index;
 #define STRING_INDEX_MAX_SIZE       MAX_SIZE(String_Index)
 #define PHONE_ITEM_INDEX_MAX_SIZE   MAX_SIZE(Phone_Item_Index)
 // ensure that the byte size for the indexes will suffice
-static_assert(STRING_INDEX_MAX_SIZE > MAX_STR_LEN, "Byte size for the String_Index is not large enough for the MAX_STR_LEN[=" stringify(MAX_STR_LEN) "]");
-static_assert(PHONE_ITEM_INDEX_MAX_SIZE > MAX_PHONE_ITEMS, "Byte size for the Phone_Item_Index is not large enough for the MAX_STR_LEN[=" stringify(MAX_STR_LEN) "]");
+static_assert(STRING_INDEX_MAX_SIZE > MAX_STR_LEN, "Byte size for the String_Index is not large enough for the MAX_STR_LEN[=" stringify_dispatch(MAX_STR_LEN) "]");
+static_assert(PHONE_ITEM_INDEX_MAX_SIZE > MAX_PHONE_ITEMS, "Byte size for the Phone_Item_Index is not large enough for the MAX_STR_LEN[=" stringify_dispatch(MAX_STR_LEN) "]");
 
 // for [OUT]put parameters
 #if defined(__MSVC__)
@@ -91,9 +96,9 @@ inline static void on_exit_error(Error error) {
     switch (error) {
         register_error(ERROR_INVALID_NUMBER_OF_ARGS, "The number of arguments passed to the tnine.exe is either too small or too large\nThe possible arguments are: [optional]-s [optional]#number_to_be_searched_for [optional/debug build]-d\n");
         register_error(ERORR_INVALID_NUMBER_ARG, "The argument [optional]#number_to_be_searched_for is not in valid number format!\n");
-        register_error(ERORR_INVALID_NUMBER_ARG_LENGTH, "The argument [optional]#number_to_be_searched_for is larger than the MAX_STR_LEN[=" stringify(MAX_STR_LEN) "]");
+        register_error(ERORR_INVALID_NUMBER_ARG_LENGTH, "The argument [optional]#number_to_be_searched_for is larger than the MAX_STR_LEN[=" stringify_dispatch(MAX_STR_LEN) "]");
         register_error(ERROR_FILE_SIZE_MISMATCH, "The number of lines expected and the number of given lines is invalid!\n");
-        register_error(ERROR_LINE_TOO_LARGE, "Line is larger than the max width (MAX=" stringify(MAX_LINE_WIDTH) ")\n");
+        register_error(ERROR_LINE_TOO_LARGE, "Line is larger than the max width (MAX=" stringify_dispatch(MAX_LINE_WIDTH) ")\n");
         register_error(ERROR_INVALID_NUMBER, "Number contains illegal characters\n");
         register_error(ERROR_FILE_TOO_LARGE, "Stdin input is too large!\n");
     }
@@ -127,32 +132,42 @@ typedef struct {
 
 typedef char* String_View;
 
-inline static int char_is_number(char c) {
-    return c >= '0' && c <= '9';
-}
-
 #define STR_SUCCESS 0
 #define STR_FAIL 1
 #define str_success(x)  ((x) == STR_SUCCESS)
 #define str_fail(x)     ((x) == STR_FAIL)
 
 /**
+ * @brief function checks whether the given character is a valid number character
+ * @return 0 on success and 1 on fail
+ * @note even '+' is considered a valid number
+ */
+inline static int char_is_number(char c) {
+    return (c >= '0' && c <= '9') || c == '+' ? STR_SUCCESS : STR_FAIL;
+}
+
+/**
  * @brief checks if all the characters of a given String_View are valid digits (0..9)
- * @return 1 on success and 0 on fail
+ * @return 0 on success and 1 on fail
  * @note to match the strcmp and other string related functions returning 0 on success, we will follow
  */
 inline static int string_is_number(String_View str) {
     for (String_Index i = 0; str[i] != '\0' && i < MAX_STR_LEN; i++) {
-        if (!char_is_number(str[i])) {
+        if (str_fail(char_is_number(str[i]))) {
             return STR_FAIL;
         }
     }
     return STR_SUCCESS;
 }
 
-#define is_lower(c) (c) >= 'a' && (c) <= 'z'
+#define is_upper(c) ((c) >= 'A' && (c) <= 'Z')
+#define is_lower(c) ((c) >= 'a' && (c) <= 'z')
+#define is_alpha(c) (is_lower((c)) || is_upper((c)))
 
 inline static char to_lower(char c) {
+    if (!is_alpha(c)) {
+        return c;
+    }
     if (is_lower(c)) {
         return c;
     }
@@ -207,15 +222,16 @@ static Sys_Args validate_sys_args(int argc, char** argv) {
             or_exit(str_size < MAX_STR_LEN, ERORR_INVALID_NUMBER_ARG_LENGTH);
             args.keyboard_input.size = (String_Index)str_size;
             memcpy(&args.keyboard_input.string[0], argv[current_arg], args.keyboard_input.size);
-            // move to the next arg
             current_arg++;
             if (argc == current_arg) {
                 return args;
             }
-        } else {
+        }
+#ifndef DEBUG
+        else {
             do_exit(ERORR_INVALID_NUMBER_ARG);
         }
-#ifdef DEBUG // only a debug parameter
+#else
         /* check for optional parameter (-d) */
         if (str_success(strcmp(argv[current_arg], "-d"))) {
             args.optionals |= OPTIONAL_SYS_ARG_FOOTPRINT_DEBUG;
@@ -256,6 +272,8 @@ typedef struct _Phone_Registry_View {
  * @brief reads a line from stdin and writes the contents into the @param out_buff
  */
 inline static int _parse_read_line(OUT String_View out_buff) {
+    // scanf_s("%100s[^\n]", out_buff);
+    // return (out_buff[0] == '\0') ? STR_FAIL : STR_SUCCESS;
     char ch = 0;
     String_Index num_chars = 0;
     while ((ch = getchar()) != EOF && ch != '\n') {
@@ -264,7 +282,7 @@ inline static int _parse_read_line(OUT String_View out_buff) {
     }
     out_buff[num_chars] = '\0';
     // todo: test when EOF == '\n'
-    return (ch == EOF && num_chars == 0) ? 1 : 0;
+    return (ch == EOF && num_chars == 0) ? STR_FAIL : STR_SUCCESS;
 }
 
 /**
@@ -274,7 +292,7 @@ static void parse_file_contents(OUT Phone_Registry* restrict out_registry) {
     for (; out_registry->num_items < MAX_PHONE_ITEMS; out_registry->num_items++) { // note: this size cannot exceed since we shall have already checked the file size when reading
         // read name
         char* name = out_registry->items[out_registry->num_items].name;
-        if (_parse_read_line(OUT name) == STR_FAIL) { // this means that we have hit the EOF but we have to make sure that it was just a blank line and not a real name, in that case the file is incomplete
+        if (str_fail(_parse_read_line(OUT name))) { // this means that we have hit the EOF but we have to make sure that it was just a blank line and not a real name, in that case the file is incomplete
             if (strlen(name) == 0) {
                 goto parsing_end;
             }
@@ -282,7 +300,7 @@ static void parse_file_contents(OUT Phone_Registry* restrict out_registry) {
         }
         // read number
         char* number = out_registry->items[out_registry->num_items].number;
-        if (_parse_read_line(OUT number) == STR_FAIL) {
+        if (str_fail(_parse_read_line(OUT number))) {
             or_exit(str_success(string_is_number(number)), ERROR_INVALID_NUMBER);
             out_registry->num_items++;
             goto parsing_end;
@@ -311,11 +329,24 @@ static int check_substring_match(Sized_String needle, String_View haystack, Subs
     return needle.size == i ? STR_SUCCESS : STR_FAIL;
 }
 
+#define is_t9_zero(c) \
+    ((c) == '0' || (c) == '+' ? STR_SUCCESS : STR_FAIL)
+
+inline static int _0_agnostic_equals(char c1, char c2) {
+    if (str_success(is_t9_zero(c1))) {
+        return is_t9_zero(c2);
+    }
+    return c1 == c2 ? STR_SUCCESS : STR_FAIL;
+}
+
 /**
  * @brief case insensitive char comparison
  * @return 0 on success, 1 on fail
  */
 inline static int default_match(char c1, char c2) {
+    if (str_success(_0_agnostic_equals(c1, c2))) {
+        return STR_SUCCESS;
+    }
     return to_lower(c1) == to_lower(c2) ? STR_SUCCESS : STR_FAIL;
 }
 
@@ -331,7 +362,7 @@ static int is_in_t9_range(char ch, char num) {
     ch = to_lower(ch);
     switch (num) {
     case '0':
-        return ch == '+' ? STR_SUCCESS : STR_FAIL;
+        return is_t9_zero(ch);
     case '1':
         return ch == '1' ? STR_SUCCESS : STR_FAIL;
     case '7':
@@ -357,7 +388,7 @@ static void match(Sized_String phone, Phone_Registry* registry, OUT Phone_Regist
         char* curr_number = registry->items[i].number;
         char phone_placeholder = phone.string[0];
         for (Phone_Item_Index j = 0; curr_number[j] != '\0'; j++) {
-            if (curr_number[j] == phone_placeholder && 
+            if (str_success(_0_agnostic_equals(curr_number[j], phone_placeholder)) && 
                 str_success(check_substring_match(phone, &curr_number[j], default_match))) {
                 out_matches->indexes[out_matches->num_indexes++] = i;
 #ifdef DEBUG
@@ -408,13 +439,16 @@ static int substring_search_ex(Sized_String phone, String_View view, Substring_M
     String_Index next_expect = 0;
     char expects = phone.string[next_expect]; // note: this assumes that the length of the phone number is larger than 0, which makes sense since for blank phone number we have a case switch in `registry_match`....
     next_expect++;
-    for (String_Index i = 0; i < phone.size; i++) {
+    for (String_Index i = 0; i < strlen(view); i++) {
         if (str_success(match_function(view[i], expects))) {
-            expects = phone.string[next_expect];
-            next_expect++;
+            if (next_expect == phone.size) {
+                return STR_SUCCESS;
+            }
+            expects = phone.string[next_expect++];
         }
     }
-    return match_function(expects, phone.string[next_expect]) ? STR_SUCCESS : STR_FAIL;
+    // next_expect is always one ahead, i.e. if the whole phone.string is successfully found, it has to 'overflow' the size
+    return next_expect > phone.size ? STR_SUCCESS : STR_FAIL;
 }
 
 #define number_search_ex(phone, number) \

@@ -106,6 +106,13 @@ class DefaultTest(Test):
     def __test_fail(self, program_return: int) -> None:
         print(f"For arguments {self.commands}\n The following \x1b[31merror\x1b[0m ocurred: {program_return}; yet expected: {self.footprint.failure_code}\n")
 
+@dataclass
+class TimedTestStamp:
+    time_taken: float
+    num_contacts: int
+
+TEST_TIMES: list[TimedTestStamp] = []
+
 class TimedTest(Test):
     def __init__(self, footprint: TestFootprint, output_file: str, program_path: str):
         self.footprint = footprint
@@ -128,6 +135,7 @@ class TimedTest(Test):
         if program_return[0] != 0:
             raise Exception(f"The program run failed with exit code: {program_return[0]}.\nMake sure that the program works properly befor running the timed test!")
         t2 = time()
+        TEST_TIMES.append(TimedTestStamp(time_taken=(t2 - t1) * 1000, num_contacts=len(self.generated_file_content) / 2))
         print(f"Test [command={self.commands}]\x1b[33m {(t2 - t1) * 1000}ms\x1b[0m")
 
 class Program:
@@ -139,18 +147,17 @@ class Program:
     def run():
         program_path = input("Enter program path: ")
         type = ord(input("Enter program run type:\nDefault test[0]\nTimer test[1]")[0])
+        if not path.isdir("out"):
+            os.mkdir("out")
         match type:
             case Program.Program_Run_Type.DEFAULT.value:
                 Program.__def_run(program_path)
             case Program.Program_Run_Type.TIMER.value:
-                Program.__timer_run()
+                Program.__timer_run(program_path)
             case _:
                 raise Exception("Invalid program type!")
 
     def __def_run(program_path: str):
-        if not path.isdir("out"):
-            os.mkdir("out")
-
         # test without t9number
         DefaultTest(
             TestFootprint(
@@ -231,7 +238,7 @@ class Program:
         with open(f"out/test_failure{5}.txt", "r+") as file:
             for index, line in enumerate(file.readlines()):
                 file.write(line)
-            file.writelines(['0' * 10 for _ in range(NUM_PAIRS_MAX)])
+            file.writelines([str('0' * 10) + '\n' for _ in range(NUM_PAIRS_MAX)])
         t.run_test()
 
         # file size mismatch
@@ -274,7 +281,21 @@ class Program:
         t.run_test()
 
     def __timer_run(program_path: str):
-        pass
+        for _ in range(100):
+            TimedTest(
+                footprint=TestFootprint(
+                    _should_fail=False,
+                    extended_search=True,
+                    t9_number_enabled=True,                
+                ),
+                output_file="out/test_default.txt",
+                program_path=program_path,
+            ).run_test()
+        average: float = 0
+        for time_stamp in TEST_TIMES:
+            average += time_stamp.time_taken
+        average /= len(TEST_TIMES)
+        print(f"Average time: {average}ms")
 
 if __name__ == '__main__':
     Program.run()
