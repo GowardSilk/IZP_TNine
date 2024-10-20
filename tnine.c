@@ -143,7 +143,7 @@ typedef char* String_View;
  * @note even '+' is considered a valid number
  */
 inline static int char_is_number(char c) {
-    return (c >= '0' && c <= '9') || c == '+' ? STR_SUCCESS : STR_FAIL;
+    return ((c >= '0' && c <= '9') || c == '+') ? STR_SUCCESS : STR_FAIL;
 }
 
 /**
@@ -268,18 +268,28 @@ typedef struct _Phone_Registry_View {
     Phone_Item_Index indexes[MAX_PHONE_ITEMS];
 } Phone_Registry_View;
 
+/** @note this is useful since cygwin's compiler emulations do not ommit Windows' \r from line ending */
+#if defined(__CYGWIN__)
+#define line_end(c) \
+    ((c) == '\r' || (c) == 10)
+#else
+#define line_end(c) \
+    ((c) == '\n')
+#endif
+
 /**
  * @brief reads a line from stdin and writes the contents into the @param out_buff
  */
 inline static int _parse_read_line(OUT String_View out_buff) {
-    // scanf_s("%100s[^\n]", out_buff);
-    // return (out_buff[0] == '\0') ? STR_FAIL : STR_SUCCESS;
     char ch = 0;
     String_Index num_chars = 0;
-    while ((ch = getchar()) != EOF && ch != '\n') {
+    while ((ch = getchar()) != EOF && !line_end(ch)) {
         or_exit(num_chars < MAX_LINE_WIDTH, ERROR_LINE_TOO_LARGE);
         out_buff[num_chars++] = ch;
     }
+#if defined(__CYGWIN__)
+    ch = getchar();
+#endif
     out_buff[num_chars] = '\0';
     // todo: test when EOF == '\n'
     return (ch == EOF && num_chars == 0) ? STR_FAIL : STR_SUCCESS;
